@@ -139,9 +139,24 @@ medium_VRAM   = 2.2
 high_VRAM     = 0.65
 full_precision_vram_multiplier = 0.7
 
-IRCNN_models_list           = [ 'IRCNNx1' ]
-SRVGGNetCompact_models_list = [ 'RealESR_Gx4', 'RealSRx4_Anime' ]
-RRDB_models_list            = [ 'BSRGANx4', 'BSRGANx2', 'RealESRGANx4' ]
+def listModels(type):
+    path = find_by_relative_path(f'AI-onnx{os_separator}{type}')
+    result = []
+    for fn in os.listdir(path):
+        name, ext = os.path.splitext(fn)
+        if ext == '.onnx': result.append(name)
+    return result
+
+def findModel(name):
+    for type in ['IRCNN', 'SRVGGNetCompact', 'RRDB']:
+        path = find_by_relative_path(f'AI-onnx{os_separator}{type}')
+        fn = f'{path}{os_separator}{name}.onnx'
+        if os.path.exists(fn): return fn
+    return f'[Model {name} not found]'
+
+IRCNN_models_list           = listModels('IRCNN')
+SRVGGNetCompact_models_list = listModels('SRVGGNetCompact')
+RRDB_models_list            = listModels('RRDB')
 
 AI_models_list         = ( IRCNN_models_list + SRVGGNetCompact_models_list + RRDB_models_list )
 gpus_list              = [ 'GPU 1', 'GPU 2', 'GPU 3', 'GPU 4' ]
@@ -211,7 +226,7 @@ def load_AI_model(
         selected_half_precision: bool
     ) -> onnxruntime_inferenceSession:
 
-    AI_model_path   = find_by_relative_path(f"AI-onnx{os_separator}{selected_AI_model}.onnx")
+    AI_model_path   = findModel(f"{selected_AI_model}")
     AI_model_loaded = onnx_load(AI_model_path)
 
     match selected_gpu:
