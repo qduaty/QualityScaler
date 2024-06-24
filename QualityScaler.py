@@ -6,6 +6,11 @@ import os
 import subprocess
 import time
 import math
+from http.server import BaseHTTPRequestHandler, HTTPServer
+import cgi
+from urllib.parse import unquote
+from io import BytesIO
+import numpy
 from functools  import cache
 from time       import sleep
 from webbrowser import open as open_browser
@@ -195,6 +200,7 @@ supported_video_extensions = [
     '.mpg', '.mpeg'
 ]
 
+webServerThread = None
 
 
 # AI -------------------
@@ -1284,6 +1290,7 @@ def write_process_status(
     processing_queue.put(f"{step}")
 
 def stop_upscale_process() -> None:
+    stopServerIfActive()
     global process_upscale_orchestrator
     try:
         process_upscale_orchestrator
@@ -1334,29 +1341,32 @@ def upscale_button_command() -> None:
 
         place_stop_button()
 
-        process_upscale_orchestrator = Process(
-            target = upscale_orchestrator,
-            args = (
-                processing_queue, 
-                selected_file_list, 
-                selected_output_path.get(),
-                selected_AI_model, 
-                selected_gpu,
-                selected_image_extension,
-                tiles_resolution, 
-                resize_factor, 
-                cpu_number, 
-                selected_half_precision, 
-                selected_video_extension,
-                selected_interpolation, 
-                selected_interpolation_factor,
-                selected_AI_multithreading
+        if len(selected_file_list) == 0:
+            startServer()
+        else:
+            process_upscale_orchestrator = Process(
+                target = upscale_orchestrator,
+                args = (
+                    processing_queue,
+                    selected_file_list,
+                    selected_output_path.get(),
+                    selected_AI_model,
+                    selected_gpu,
+                    selected_image_extension,
+                    tiles_resolution,
+                    resize_factor,
+                    cpu_number,
+                    selected_half_precision,
+                    selected_video_extension,
+                    selected_interpolation,
+                    selected_interpolation_factor,
+                    selected_AI_multithreading
+                )
             )
-        )
-        process_upscale_orchestrator.start()
+            process_upscale_orchestrator.start()
 
-        thread_wait = Thread(target = check_upscale_steps)
-        thread_wait.start()
+            thread_wait = Thread(target = check_upscale_steps)
+            thread_wait.start()
 
 def prepare_output_image_filename(
         image_path: str, 
@@ -1580,7 +1590,7 @@ def upscale_orchestrator(
 
 def upscale_image(
         processing_queue: multiprocessing_Queue,
-        image_path: str, 
+        image_path,
         file_number: int,
         total_files: int,
         start_time: float,
@@ -1595,12 +1605,15 @@ def upscale_image(
         selected_interpolation_factor: float
         ) -> None:
     
-    upscaled_image_path = prepare_output_image_filename(image_path, selected_output_path, selected_AI_model, resize_factor, selected_image_extension, selected_interpolation_factor)
-    if os.path.exists(upscaled_image_path):
-        print('Skipping ' + upscaled_image_path)
-        return
-
-    starting_image      = image_read(image_path)
+    if isinstance(image_path, str):
+        upscaled_image_path = prepare_output_image_filename(image_path, selected_output_path, selected_AI_model, resize_factor, selected_image_extension, selected_interpolation_factor)
+        if os.path.exists(upscaled_image_path):
+            print('Skipping ' + upscaled_image_path)
+            return
+        starting_image      = image_read(image_path)
+    else:
+        starting_image = image_path
+        image_path = 'POST data'
     height, width = get_image_resolution(starting_image)
     height *= resize_factor * upscale_factor
     width *= resize_factor * upscale_factor
@@ -1635,21 +1648,24 @@ def upscale_image(
     else:
         upscaled_image = AI_upscale(AI_model, image_to_upscale)
 
-    if selected_interpolation:
-        interpolate_images_and_save(
-            target_path = upscaled_image_path,
-            image1 = starting_image,
-            image2 = upscaled_image,
-            image1_importance = selected_interpolation_factor
-        )
+    if selected_output_path is not None:
+        if selected_interpolation:
+            interpolate_images_and_save(
+                target_path = upscaled_image_path,
+                image1 = starting_image,
+                image2 = upscaled_image,
+                image1_importance = selected_interpolation_factor
+            )
 
+        else:
+            image_write(
+                file_path = upscaled_image_path,
+                file_data = upscaled_image
+            )
+
+        copy_file_metadata(image_path, upscaled_image_path)
     else:
-        image_write(
-            file_path = upscaled_image_path,
-            file_data = upscaled_image
-        )
-
-    copy_file_metadata(image_path, upscaled_image_path)
+        return upscaled_image
 
 # VIDEOS
 
@@ -1929,12 +1945,13 @@ def user_input_checks() -> bool:
     # Selected files 
     try: selected_file_list = scrollable_frame_file_list.get_selected_file_list()
     except:
-        info_message.set("Please select a file")
-        is_ready = False
+        selected_file_list = []
+        # info_message.set("Please select a file")
+        # is_ready = False
 
-    if len(selected_file_list) <= 0:
-        info_message.set("Please select a file")
-        is_ready = False
+    # if len(selected_file_list) <= 0:
+    #     info_message.set("Please select a file")
+    #     is_ready = False
 
 
     # File resize factor 
@@ -2548,6 +2565,80 @@ def place_upscale_button():
     )
     upscale_button.place(relx = column2_x, rely = row4_y, anchor = "center")
    
+
+class MyServer(BaseHTTPRequestHandler):
+    def do_GET(self):
+        filepath = unquote(str(self.path)[1:])
+        if len(filepath) == 0:
+            self.send_response(200)
+            self.send_header("Content-type", "text/html")
+            self.end_headers()
+            self.wfile.write(bytes('''<html>
+<script>
+    function dropHandler(ev) {
+        //ev.preventDefault();
+        console.log(ev);
+    }
+</script>
+<div style="height:100px" ondrop="dropHandler(event);">
+<form method="POST" enctype="multipart/form-data">
+    <input type="file" name="file">
+    <input type="submit">
+</form>
+</div></html>''', "utf-8"))
+
+    def do_POST(self):
+        form = cgi.FieldStorage(
+                    fp=self.rfile,
+                    headers=self.headers,
+                    environ={'REQUEST_METHOD': 'POST'}
+                )
+        numpy_buffer = numpy_frombuffer(form.getvalue("file"), uint8)
+        opencv_decoded = opencv_imdecode(numpy_buffer, IMREAD_UNCHANGED)
+        newimg = upscale_image(
+            processing_queue,
+            opencv_decoded,
+            1,
+            1,
+            time.time(),
+            None, # selected_output_path
+            self.server.AI_model,
+            selected_AI_model,
+             self.server.upscale_factor,
+            selected_image_extension,
+            tiles_resolution,
+            resize_factor,
+            selected_interpolation,
+            selected_interpolation_factor
+        )
+        output = BytesIO()
+        if isinstance(newimg, numpy.ndarray):
+            self.send_response(200)
+            self.send_header("Content-type", "image/jpeg")
+            self.end_headers()
+            self.wfile.write(opencv_imencode(".jpeg", newimg)[1])
+        else:
+            self.send_response(504)
+            self.send_header("Content-type", "text/html")
+            self.end_headers()
+            self.wfile.write("<html><h1>Error processing file</h1></html>")
+
+
+def startServer(serverPort=12345, hostName='localhost'):
+    write_process_status(processing_queue, f"Loading AI model")
+    webServer = HTTPServer((hostName, serverPort), MyServer)
+    webServer.AI_model = load_AI_model(selected_AI_model, selected_gpu, selected_half_precision)
+    if   'x1' in selected_AI_model: webServer.upscale_factor = 1
+    elif 'x2' in selected_AI_model: webServer.upscale_factor = 2
+    elif 'x4' in selected_AI_model: webServer.upscale_factor = 4
+    print("Server started http://%s:%s" % (hostName, serverPort))
+    webServerThread = Thread(target = webServer.serve_forever)
+    webServerThread.start()
+
+def stopServerIfActive():
+    if webServerThread is Thread and webServerThread.is_alive():
+        webServerThread.kill()
+        print("Server stopped")
 
 
 # Main functions ---------------------------
