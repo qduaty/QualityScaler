@@ -8,7 +8,6 @@ import math
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import cgi
 from urllib.parse import unquote
-from io import BytesIO
 import numpy
 import re
 from functools  import cache
@@ -2779,7 +2778,7 @@ class App():
         window.title('')
         window.geometry("675x675")
         window.resizable(False, False)
-        window.iconbitmap(find_by_relative_path("Assets" + os_separator + "logo.ico"))
+        if os.name == 'nt': window.iconbitmap(find_by_relative_path("Assets" + os_separator + "logo.ico"))
 
         place_app_name()
         place_output_path_textbox()
